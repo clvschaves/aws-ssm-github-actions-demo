@@ -4,12 +4,14 @@ set -Eeuo pipefail
 
 : "${GITHUB_OWNER:?Defina GITHUB_OWNER}"
 : "${GITHUB_REPOSITORY_NAME:?Defina GITHUB_REPOSITORY_NAME}"
+: "${GITHUB_OWNER_ID:?Defina GITHUB_OWNER_ID}"
+: "${GITHUB_REPOSITORY_ID:?Defina GITHUB_REPOSITORY_ID}"
 
 AWS_ACCOUNT_ID="378970971717"
 ROLE_NAME="DeployPathGitHubActionsRole"
 POLICY_NAME="DeployPathGitHubActionsPolicy"
 PROVIDER_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
-OIDC_SUBJECT="repo:${GITHUB_OWNER}/${GITHUB_REPOSITORY_NAME}:environment:production"
+OIDC_SUBJECT="repo:${GITHUB_OWNER}@${GITHUB_OWNER_ID}/${GITHUB_REPOSITORY_NAME}@${GITHUB_REPOSITORY_ID}:environment:production"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TRUST_FILE=$(mktemp)
 
