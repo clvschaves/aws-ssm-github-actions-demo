@@ -59,6 +59,22 @@ jobs:
     timeout-minutes: 15
     environment: production
     steps:
+      - name: Exibir claims OIDC não sensíveis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RESPONSE=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          TOKEN=$(jq -r '.value' <<<"${RESPONSE}")
+          PAYLOAD=$(cut -d. -f2 <<<"${TOKEN}" | tr '_-' '/+')
+          case $((${#PAYLOAD} % 4)) in
+            2) PAYLOAD="${PAYLOAD}==" ;;
+            3) PAYLOAD="${PAYLOAD}=" ;;
+          esac
+          printf '%s' "${PAYLOAD}" | base64 --decode | \
+            jq '{iss, aud, sub, repository, environment, ref}'
+
       - name: Obter credenciais temporárias AWS por OIDC
         uses: aws-actions/configure-aws-credentials@v6.2.4
         with:
@@ -67,6 +83,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           allowed-account-ids: "378970971717"
           mask-aws-account-id: true
+          retry-max-attempts: 3
 
       - name: Confirmar identidade e instância SSM
         run: |
