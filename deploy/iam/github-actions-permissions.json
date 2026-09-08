@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendCommandToDemoInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:us-east-1:378970971717:instance/i-03e69e83fc6b8193c",
+        "arn:aws:ssm:us-east-1::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Sid": "ReadCommandAndManagedNodeStatus",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:ListCommands"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

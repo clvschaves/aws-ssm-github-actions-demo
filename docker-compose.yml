@@ -1,0 +1,17 @@
+# Blueprint Operacional: single immutable web service, published on 8080 to avoid conflicts with existing workloads.
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aws-ssm-github-actions-demo:local
+    container_name: aws-ssm-github-actions-demo
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8082}:80"
+    networks:
+      - deploy-demo
+
+networks:
+  deploy-demo:
+    name: deploy-demo

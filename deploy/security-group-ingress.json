@@ -1,0 +1,13 @@
+[
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 8082,
+    "ToPort": 8082,
+    "IpRanges": [
+      {
+        "CidrIp": "200.10.185.12/32",
+        "Description": "Acesso corporativo autorizado ao DeployPath"
+      }
+    ]
+  }
+]

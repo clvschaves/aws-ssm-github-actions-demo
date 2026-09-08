@@ -1,0 +1,172 @@
+# Blueprint Operacional: build verificável e deploy sem SSH por credenciais temporárias OIDC + SSM.
+name: Validar e publicar na EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  EC2_INSTANCE_ID: i-03e69e83fc6b8193c
+  APP_DIR: /opt/aws-ssm-github-actions-demo
+  APP_PORT: "8082"
+
+jobs:
+  validate:
+    name: Validar aplicação
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Obter código
+        uses: actions/checkout@v6
+
+      - name: Preparar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Instalar dependências
+        run: pnpm install --frozen-lockfile
+
+      - name: Verificar TypeScript
+        run: pnpm run check
+
+      - name: Compilar frontend
+        run: pnpm exec vite build
+
+      - name: Validar imagem Docker
+        run: docker build --tag deploypath:${GITHUB_SHA} .
+
+  deploy:
+    name: Atualizar EC2 via SSM
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Obter credenciais temporárias AWS por OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: github-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: "378970971717"
+          mask-aws-account-id: true
+
+      - name: Confirmar identidade e instância SSM
+        run: |
+          set -Eeuo pipefail
+          aws sts get-caller-identity
+          STATUS=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text)
+          test "${STATUS}" = "Online"
+
+      - name: Enviar implantação para a EC2
+        id: ssm
+        env:
+          DEPLOY_REPOSITORY: ${{ github.repository }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+
+          REMOTE_SCRIPT=$(cat <<'REMOTE_SCRIPT_EOF'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          APP_DIR="__APP_DIR__"
+          APP_PORT="__APP_PORT__"
+          REPOSITORY="__REPOSITORY__"
+          REVISION="__REVISION__"
+          REPO_URL="https://github.com/${REPOSITORY}.git"
+
+          command -v git >/dev/null 2>&1 || { echo "git não encontrado" >&2; exit 10; }
+          command -v docker >/dev/null 2>&1 || { echo "docker não encontrado" >&2; exit 11; }
+          docker compose version >/dev/null 2>&1 || { echo "docker compose não encontrado" >&2; exit 12; }
+
+          install -d -m 0755 "${APP_DIR}"
+
+          if [ ! -d "${APP_DIR}/.git" ]; then
+            rm -rf "${APP_DIR}"
+            git clone --filter=blob:none "${REPO_URL}" "${APP_DIR}"
+          fi
+
+          cd "${APP_DIR}"
+          git remote set-url origin "${REPO_URL}"
+          git fetch --prune --depth=1 origin "${REVISION}"
+          git reset --hard "${REVISION}"
+
+          APP_PORT="${APP_PORT}" docker compose up -d --build --remove-orphans
+
+          for attempt in $(seq 1 18); do
+            if curl --fail --silent --show-error "http://127.0.0.1:${APP_PORT}/healthz" >/dev/null; then
+              docker compose ps
+              docker image prune -f
+              echo "DEPLOY_SUCCESS revision=${REVISION} port=${APP_PORT}"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          docker compose ps
+          docker compose logs --tail=120
+          echo "Healthcheck falhou" >&2
+          exit 20
+          REMOTE_SCRIPT_EOF
+          )
+
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__APP_DIR__/${APP_DIR}}"
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__APP_PORT__/${APP_PORT}}"
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__REPOSITORY__/${DEPLOY_REPOSITORY}}"
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__REVISION__/${DEPLOY_SHA}}"
+
+          PARAMETERS=$(jq -n --arg script "${REMOTE_SCRIPT}" '{commands: [$script]}')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "GitHub Actions ${GITHUB_RUN_ID} revision ${DEPLOY_SHA}" \
+            --timeout-seconds 600 \
+            --parameters "${PARAMETERS}" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "command_id=${COMMAND_ID}" >> "${GITHUB_OUTPUT}"
+          echo "Comando SSM enviado: ${COMMAND_ID}"
+
+      - name: Aguardar e auditar resultado
+        env:
+          COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
+        run: |
+          set -Eeuo pipefail
+          aws ssm wait command-executed \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}"
+
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query Status \
+            --output text)
+          test "${STATUS}" = "Success"

@@ -1,0 +1,10 @@
+.git
+.github
+.manus-logs
+dist
+node_modules
+README.md
+ideas.md
+npm-debug.log*
+pnpm-debug.log*
+
